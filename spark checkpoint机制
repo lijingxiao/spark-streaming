@@ -1,0 +1,42 @@
+checkpoint 就是把内存中的变化刷新到持久存储。
+
+1）为什么checkpoint？
+分布式计算中难免因为网络，存储等原因出现计算失败的情况，RDD中的lineage信息常用来在task失败后重计算使用，
+为了防止计算失败后从头开始计算造成的大量开销，RDD会checkpoint计算过程的信息，这样作业失败后从checkpoing点重新计算即可，提高效率。
+
+2）什么时候写checkpoint数据？
+当RDD的action算子触发计算结束后会执行checkpoint。
+在spark streaming中每generate一个batch的RDD也会触发checkpoint操作。
+
+3）什么时候读checkpoint数据？
+task计算失败的时候会从checkpoint读取数据进行计算。
+
+4）checkpoint具体实现有哪些?
+其实现分两种：
+LocalRDDCheckpointData：临时存储在本地executor的磁盘和内存上（不能仅使用内存，因为内存的eviction机制可能造成data 
+loss）。该实现的特点是比较快，适合lineage信息需要经常被删除的场景（如GraphX），可容忍executor挂掉。
+ReliableRDDCheckpointData：存储在外部可靠存储（如hdfs），可以达到容忍driver 挂掉情况。虽然效率没有存储本地高，但是容错级别最好。 
+如果代码中没有设置checkpoint，则使用local的checkpoint模式，如果设置路径，则使用reliable的checkpoint模式
+
+5）spark streaming的checkpoint
+spark streaming有一个单独的线程CheckpointWriteHandler，每generate一个batch interval的RDD数据都会触发checkpoint操作。
+对于kafka的DirectKafkaInputDStreamCheckpointData，实质是重写DStreamCheckpointData的update和restore方法，
+这样checkpoint的数据就是topic，partition，fromOffset和untilOffset。
+
+如何使用 checkpoint？
+启用 checkpoint，需要设置一个支持容错 的、可靠的文件系统（如 HDFS、s3 等）目录来保存 checkpoint 数据。
+通过调用 streamingContext.checkpoint(checkpointDirectory) 来完成。另外，如果你想让你的 application 能从 driver 失败中恢复，
+你的 application 要满足：
+若 application 为首次重启，将创建一个新的 StreamContext 实例
+如果 application 是从失败中重启，将会从 checkpoint 目录导入 checkpoint 数据来重新创建 StreamingContext 实例
+
+checkpoint 的时机
+
+在 Spark Streaming 中，JobGenerator 用于生成每个 batch 对应的 jobs，它有一个定时器，定时器的周期即初始化 StreamingContext 时设置的 batchDuration。
+这个周期一到，JobGenerator 将调用generateJobs方法来生成并提交 jobs，这之后调用 doCheckpoint 方法来进行 checkpoint。
+doCheckpoint 方法中，会判断当前时间与 streaming application start 的时间之差是否是 checkpoint duration 的倍数，只有在是的情况下才进行 checkpoint。
+
+需要注意的是，checkpoint的时间间隔需要仔细考虑，过小或过大的时间间隔都可能导致问题。通常，checkpoint的时间间隔最好是DStream的批处理时间间隔的5-10倍。
+dstream.checkpoint()可用来设置checkpoint的时间间隔，同时对于那些没有默认地进行checkpointing的DStream(非stateful转换操作生成的DStream)，
+这也将引起周期性地checkpoint该DStream中的RDD。
+
